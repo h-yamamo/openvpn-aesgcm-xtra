@@ -1,0 +1,15 @@
+OpenVPN
+
+Support AES-GCM, AES-CCM, AES-CTR and AES-XTS cipher modes.
+For Debian/Ubuntu packages.
+
+How to make the package:
+
+  (in some directory)
+  apt-get -d source openvpn
+  tar xzf openvpn_2.3.2.orig.tar.gz
+  cd openvpn-2.3.2
+  tar xzf ../openvpn_2.3.2-7~bpo70+1.debian.tar.gz
+  cp -a (this repository)/wheezy-backports/debian/* debian/
+  debuild -uc -us
+
