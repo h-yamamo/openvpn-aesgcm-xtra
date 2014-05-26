@@ -3,6 +3,10 @@ OpenVPN
 Support AES-GCM, AES-CCM, AES-CTR and AES-XTS cipher modes.
 For Debian/Ubuntu packages.
 
+Reference:
+  https://community.openvpn.net/openvpn/attachment/ticket/301
+  [0001-Add-AEAD-cipher-modes.patch]
+
 How to make the package:
 
   (in some directory)
