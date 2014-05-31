@@ -27,6 +27,6 @@ How to make the package:
   cp -a (this repository)/trusty/debian/* debian/
   debuild -uc -us
 
-Example options:
+Usage with AES-GCM cipher mode:
   openvpn --cipher id-aes128-GCM --auth none ...
 
