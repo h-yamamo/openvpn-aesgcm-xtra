@@ -1,3 +1,15 @@
+openvpn (2.3.2-7~bpo70+1+ore2) wheezy-backports; urgency=medium
+
+  * Patches from ubuntu trusty openvpn (2.3.2-7ubuntu3.1)
+  * SECURITY UPDATE: server denial of service via too-short control channel
+    packets
+    - debian/patches/CVE-2014-8104.patch: drop too-short control channel
+      packets instead of asserting out in src/openvpn/ssl.c.
+    - CVE-2014-8104
+  * debian/patches/update_certs.patch: update test certs to fix FTBFS.
+
+ -- Ore sama <oresama@hoge.japan>  Wed, 03 Dec 2014 20:07:06 +0900
+
 openvpn (2.3.2-7~bpo70+1+ore1) wheezy-backports; urgency=low
 
   * Non-maintainer release.
