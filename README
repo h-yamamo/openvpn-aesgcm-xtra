@@ -14,7 +14,7 @@ How to make the package:
   apt-get -d source openvpn
   tar xf openvpn_2.3.2.orig.tar.gz
   cd openvpn-2.3.2
-  tar xvf ../openvpn_2.3.2-7~bpo70+1.debian.tar.gz
+  tar xvf ../openvpn_2.3.2-7~bpo70+2.debian.tar.gz
   cp -a (this repository)/wheezy-backports/debian/* debian/
   debuild -uc -us
 
