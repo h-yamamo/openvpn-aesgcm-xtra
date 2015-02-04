@@ -1,5 +1,5 @@
 --- a/configure.ac	2014-05-01 20:12:22.000000000 +0900
-+++ b/configure.ac	2014-09-16 20:53:20.000000000 +0900
++++ b/configure.ac	2015-02-04 01:03:23.000000000 +0900
 @@ -61,6 +61,13 @@
  )
  
@@ -26,25 +26,28 @@
 +			EVP_aes_256_xts \
 +		],
 +		,
-+		[have_openssl_xtra_cipher_modes="no"; break]
++		[have_openssl_xtra_cipher_modes="no"]
 +	)
 +
  	CFLAGS="${saved_CFLAGS}"
  	LIBS="${saved_LIBS}"
  fi
-@@ -942,6 +960,10 @@
+@@ -942,6 +960,13 @@
  		CRYPTO_SSL_LIBS="${OPENSSL_SSL_LIBS}"
  		AC_DEFINE([ENABLE_CRYPTO_OPENSSL], [1], [Use OpenSSL library])
  		test "${have_openssl_engine}" = "yes" && AC_DEFINE([HAVE_OPENSSL_ENGINE], [1], [Use crypto library])
 +		if test "${enable_xtra_cipher_modes}" = "yes"; then
-+			test "${have_openssl_xtra_cipher_modes}" = "yes" && AC_DEFINE([HAVE_XTRA_CIPHER_MODES], [1], [Use crypto library])
-+			test "${have_openssl_xtra_cipher_modes}" != "yes" && AC_MSG_ERROR([Xtra cipher modes required but missing])
++			if test "${have_openssl_xtra_cipher_modes}" = "yes"; then
++				AC_DEFINE([USE_XTRA_CIPHER_MODES], [1], [Use xtra cipher modes])
++			else
++				AC_MSG_ERROR([Xtra cipher modes required but missing])
++			fi
 +		fi
  		;;
  	polarssl)
  		have_crypto_crypto="${have_polarssl_crypto}"
 --- a/src/openvpn/crypto.c	2014-05-01 20:12:22.000000000 +0900
-+++ b/src/openvpn/crypto.c	2013-09-09 01:23:49.215559844 +0900
++++ b/src/openvpn/crypto.c	2015-02-04 01:08:36.000000000 +0900
 @@ -94,16 +94,21 @@
    if (buf->len > 0 && opt->key_ctx_bi)
      {
@@ -213,14 +216,15 @@
  #ifdef ALLOW_NON_CBC_CIPHERS
  	      || (cfb_ofb_allowed && (mode == OPENVPN_MODE_CFB || mode == OPENVPN_MODE_OFB))
  #endif
-@@ -446,10 +486,14 @@
+@@ -446,10 +486,15 @@
      }
    if (authname && authname_defined)
      {
 -      kt->digest = md_kt_get (authname);
 -      kt->hmac_length = md_kt_size (kt->digest);
 +      if (aead_cipher) {
-+	msg (M_FATAL, "AEAD mode cipher '%s' does not need an HMAC algorithm", ciphername);
++	msg (M_FATAL, "AEAD mode cipher '%s' does not need an HMAC algorithm"
++			", specify '--auth none'.", ciphername);
 +      } else {
 +	kt->digest = md_kt_get (authname);
 +	kt->hmac_length = md_kt_size (kt->digest);
@@ -232,7 +236,7 @@
        if (warn)
  	msg (M_WARN, "******* WARNING *******: null MAC specified, no authentication will be used");
 --- a/src/openvpn/crypto.h	2014-05-01 19:35:20.000000000 +0900
-+++ b/src/openvpn/crypto.h	2013-09-09 01:43:51.093114639 +0900
++++ b/src/openvpn/crypto.h	2015-02-04 01:10:52.000000000 +0900
 @@ -393,6 +393,35 @@
    return key->encrypt.cipher || key->encrypt.hmac || key->decrypt.cipher || key->decrypt.hmac;
  }
@@ -240,7 +244,7 @@
 +static inline bool
 +all_xtra_mode (unsigned int mode)
 +{
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +  return mode == OPENVPN_MODE_GCM || mode == OPENVPN_MODE_CTR || mode == OPENVPN_MODE_XTS;
 +#else
 +  return false;
@@ -250,7 +254,7 @@
 +static inline bool
 +aead_mode (unsigned int mode)
 +{
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +  return mode == OPENVPN_MODE_GCM;
 +#else
 +  return false;
@@ -260,7 +264,7 @@
 +static inline int
 +aead_tag_len (unsigned int mode)
 +{
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +  return mode == OPENVPN_MODE_GCM ? OPENVPN_GCM_TAG_LENGTH : 0;
 +#else
 +  return 0;
@@ -297,12 +301,12 @@
   *
   * Generic message digest information functions
 --- a/src/openvpn/crypto_openssl.c	2014-05-01 20:12:22.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.c	2013-09-08 19:36:06.052330292 +0900
++++ b/src/openvpn/crypto_openssl.c	2015-02-04 01:12:30.000000000 +0900
 @@ -316,6 +316,9 @@
  	{
  	  const unsigned int mode = EVP_CIPHER_mode (cipher);
  	  if (mode == EVP_CIPH_CBC_MODE
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +	      || mode == EVP_CIPH_GCM_MODE || mode == EVP_CIPH_CTR_MODE || mode == EVP_CIPH_XTS_MODE
 +#endif
  #ifdef ALLOW_NON_CBC_CIPHERS
@@ -314,7 +318,7 @@
  
 +int cipher_ctx_get_tag (EVP_CIPHER_CTX *ctx, uint8_t *tag_buf, int tag_size)
 +{
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +  return EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_GET_TAG, tag_size, tag_buf);
 +#else
 +  ASSERT (0);
@@ -324,7 +328,7 @@
 +int
 +cipher_ctx_set_tag (EVP_CIPHER_CTX *ctx, uint8_t *tag_buf, int tag_size)
 +{
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +  return EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_TAG, tag_size, tag_buf);
 +#else
 +  ASSERT (0);
@@ -335,7 +339,7 @@
  void
  cipher_des_encrypt_ecb (const unsigned char key[DES_KEY_LENGTH],
 --- a/src/openvpn/crypto_openssl.h	2014-05-01 19:35:20.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.h	2013-09-08 23:21:52.017145222 +0900
++++ b/src/openvpn/crypto_openssl.h	2015-02-04 01:13:42.000000000 +0900
 @@ -61,6 +61,26 @@
  /** Cipher is in CFB mode */
  #define OPENVPN_MODE_CFB 	EVP_CIPH_CFB_MODE
@@ -351,7 +355,7 @@
 +/** Cipher is in XTS mode */
 +#define OPENVPN_MODE_XTS 	EVP_CIPH_XTS_MODE
 +
-+#ifdef HAVE_XTRA_CIPHER_MODES
++#ifdef USE_XTRA_CIPHER_MODES
 +#define OPENVPN_AEAD_TAG_LENGTH	EVP_GCM_TLS_TAG_LEN
 +/** Tag length of GCM mode is 16 */
 +#define OPENVPN_GCM_TAG_LENGTH	OPENVPN_AEAD_TAG_LENGTH

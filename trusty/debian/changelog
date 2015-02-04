@@ -3,7 +3,7 @@ openvpn (2.3.2-7ubuntu3.1+ore1) trusty; urgency=low
   * Non-maintainer release.
   * Add AES-GCM, AES-CTR and AES-XTS cipher modes support.
 
- -- Ore sama <oresama@hoge.japan>  Wed, 03 Dec 2014 19:50:48 +0900
+ -- Ore sama <oresama@hoge.japan>  Wed, 04 Jan 2015 19:36:55 +0900
 
 openvpn (2.3.2-7ubuntu3.1) trusty-security; urgency=medium
 

@@ -3,7 +3,7 @@ openvpn (2.3.4-5+ore1) unstable; urgency=low
   * Non-maintainer release.
   * Add AES-GCM, AES-CTR and AES-XTS cipher modes support.
 
- -- Ore sama <oresama@hoge.japan>  Wed, 03 Dec 2014 21:34:26 +0900
+ -- Ore sama <oresama@hoge.japan>  Wed, 04 Jan 2015 01:15:00 +0900
 
 openvpn (2.3.4-5) unstable; urgency=high
 

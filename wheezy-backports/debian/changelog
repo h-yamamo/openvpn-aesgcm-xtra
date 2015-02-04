@@ -3,7 +3,7 @@ openvpn (2.3.2-7~bpo70+2+ore1) wheezy-backports; urgency=low
   * Non-maintainer release.
   * Add AES-GCM, AES-CTR and AES-XTS cipher modes support.
 
- -- Ore sama <oresama@hoge.japan>  mon, 08 Dec 2014 19:08:57 +0900
+ -- Ore sama <oresama@hoge.japan>  Wed, 04 Jan 2015 19:36:30 +0900
 
 openvpn (2.3.2-7~bpo70+2) wheezy-backports; urgency=low
 
