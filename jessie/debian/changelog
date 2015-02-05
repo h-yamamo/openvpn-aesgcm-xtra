@@ -1,9 +1,10 @@
-openvpn (2.3.4-5+ore1) unstable; urgency=low
+openvpn (2.3.4-5+ore1) jessie; urgency=low
 
   * Non-maintainer release.
   * Add AES-GCM, AES-CTR and AES-XTS cipher modes support.
+  * Add AEAD ciphers - chacha20+poly1305, aes-128-gcm and aes-256-gcm.
 
- -- Ore sama <oresama@hoge.japan>  Wed, 04 Jan 2015 01:15:00 +0900
+ -- Ore sama <oresama@hoge.japan>  Thu, 05 Feb 2015 01:00:00 +0900
 
 openvpn (2.3.4-5) unstable; urgency=high
 

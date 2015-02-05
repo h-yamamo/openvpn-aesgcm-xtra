@@ -1,0 +1,707 @@
+# support EVP_AEAD patch, apply after xtra-cipher-modes.patch
+#
+# for openvpn_2.3.4 / debian jessie
+#
+--- a/configure.ac	2015-02-04 01:03:23.000000000 +0900
++++ b/configure.ac	2015-02-05 00:58:21.000000000 +0900
+@@ -68,6 +68,13 @@
+ )
+ 
+ AC_ARG_ENABLE(
++	[evp-aead],
++	[AS_HELP_STRING([--disable-evp-aead], [disable using EVP_AEAD APIs @<:@default=yes@:>@])],
++	,
++	[enable_evp_aead="yes"]
++)
++
++AC_ARG_ENABLE(
+ 	[ssl],
+ 	[AS_HELP_STRING([--disable-ssl], [disable SSL support for TLS-based key exchange @<:@default=yes@:>@])],
+ 	,
+@@ -301,6 +308,7 @@
+ AC_DEFINE_UNQUOTED([TARGET_ALIAS], ["${host}"], [A string representing our host])
+ case "$host" in
+ 	*-*-linux*)
++		test "${host:0:4}" = "arm-" && AC_DEFINE([_ARM_ALIGNMENT], [16], [Buffer alignment on ARM])
+ 		AC_DEFINE([TARGET_LINUX], [1], [Are we running on Linux?])
+ 		AC_DEFINE_UNQUOTED([TARGET_PREFIX], ["L"], [Target prefix])
+ 		;;
+@@ -790,6 +798,27 @@
+ 		[have_openssl_xtra_cipher_modes="no"]
+ 	)
+ 
++	if test "${enable_evp_aead}" = "yes"; then
++		have_openssl_evp_aead="yes"
++		AC_CHECK_FUNCS(
++			[ \
++				EVP_AEAD_CTX_init \
++				EVP_AEAD_CTX_seal \
++				EVP_AEAD_CTX_open \
++				EVP_AEAD_CTX_cleanup \
++				EVP_AEAD_key_length \
++				EVP_AEAD_nonce_length \
++				EVP_AEAD_max_tag_len \
++			],
++			,
++			[have_openssl_evp_aead="no"; break]
++		)
++
++		AC_CHECK_FUNCS([EVP_aead_aes_128_gcm])
++		AC_CHECK_FUNCS([EVP_aead_aes_256_gcm])
++		AC_CHECK_FUNCS([EVP_aead_chacha20_poly1305])
++	fi
++
+ 	CFLAGS="${saved_CFLAGS}"
+ 	LIBS="${saved_LIBS}"
+ fi
+@@ -967,6 +996,13 @@
+ 				AC_MSG_ERROR([Xtra cipher modes required but missing])
+ 			fi
+ 		fi
++		if test "${enable_evp_aead}" = "yes"; then
++			if test "${have_openssl_evp_aead}" = "yes"; then
++				AC_DEFINE([USE_EVP_AEAD], [1], [Use EVP_AEAD APIs])
++			else
++				AC_MSG_ERROR([EVP_AEAD APIs required but missing])
++			fi
++		fi
+ 		;;
+ 	polarssl)
+ 		have_crypto_crypto="${have_polarssl_crypto}"
+--- a/src/openvpn/crypto.c	2015-02-04 01:08:36.000000000 +0900
++++ b/src/openvpn/crypto.c	2015-02-05 00:58:21.000000000 +0900
+@@ -83,6 +83,195 @@
+   return ret;
+ }
+ 
++#ifdef USE_EVP_AEAD
++/* OpenSSL EVP_AEAD_CTX interfaces */
++static bool
++aead_encrypt (struct buffer *buf, struct buffer *work,
++		const struct crypto_options *opt,
++		const struct frame* frame, struct gc_arena *gc)
++{
++	EVP_AEAD_CTX *ae_ctx =
++		&((aead_ctx_t *)opt->key_ctx_bi->encrypt.cipher)->aead_ctx;
++	uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
++	int iv_size = EVP_AEAD_nonce_length (ae_ctx->aead);
++	int overhead = EVP_AEAD_MAX_TAG_LENGTH;
++	size_t outlen;
++
++	CLEAR (iv_buf);
++	/* generate pseudo-random IV */
++	if (opt->flags & CO_USE_IV)
++	  {
++	    prng_bytes (iv_buf, iv_size);
++	    dmsg (D_PACKET_CONTENT, "ENCRYPT IV: %s",
++			format_hex (iv_buf, iv_size, 0, gc));
++	  }
++
++	/* Put packet ID in plaintext buffer */
++	if (opt->packet_id)
++	  {
++	    struct packet_id_net pin;
++
++	    packet_id_alloc_outgoing (&opt->packet_id->send, &pin,
++			BOOL_CAST (opt->flags & CO_PACKET_ID_LONG_FORM));
++	    ASSERT (packet_id_write (&pin, buf,
++			BOOL_CAST (opt->flags & CO_PACKET_ID_LONG_FORM), true));
++	  }
++
++	/* initialize work buffer with FRAME_HEADROOM bytes of prepend capacity
++	*/
++#ifdef _ARM_ALIGNMENT
++	{
++	  unsigned align_err = (intptr_t) (work->data +
++				FRAME_HEADROOM (frame)) & ARM_ALIGN_MASK;
++	  ASSERT (buf_init (work, FRAME_HEADROOM (frame) +
++			(align_err ? ARM_ALIGN_VAL - align_err : 0)));
++	}
++#else
++	ASSERT (buf_init (work, FRAME_HEADROOM (frame)));
++#endif
++
++	dmsg (D_PACKET_CONTENT, "ENCRYPT FROM: %s",
++		format_hex (BPTR (buf), BLEN (buf), 63, gc));
++
++	/* Buffer overflow check */
++	if (!buf_safe (work, buf->len + overhead))
++	  {
++	    msg (D_CRYPT_ERRORS, "ENCRYPT: buffer size error, "
++			"bc=%d bo=%d bl=%d wc=%d wo=%d wl=%d ovh=%d",
++		buf->capacity, buf->offset, buf->len,
++		work->capacity, work->offset, work->len,
++		overhead);
++	    return false;
++	  }
++
++#ifdef _ARM_ALIGNMENT
++	if (BPTR (buf) > opt->enc_buf && BPTR (buf) <  opt->enc_buf + 256)
++	  opt->align_error[0] =
++			(uint8_t) ((intptr_t) BPTR (buf) & ARM_ALIGN_MASK);
++	dmsg (D_CRYPTO_DEBUG, "Enc-buf addr out:%p, in:%p, iv:%p",
++				BPTR (work), BPTR (buf), iv_buf);
++#endif
++	/* Encrypt packet ID, payload with IV */
++	if (!EVP_AEAD_CTX_seal (ae_ctx,
++				BPTR (work), &outlen, buf->len + overhead,
++				iv_buf, iv_size, BPTR (buf), buf->len, NULL, 0))
++	  {
++	    msg (D_CRYPT_ERRORS, "ENCRYPT: AEAD_CTX_seal error");
++	    return false;
++	  }
++
++	ASSERT (outlen >= buf->len);
++	work->len += outlen;
++
++	dmsg (D_PACKET_CONTENT, "ENCRYPT TO: %s",
++		format_hex (BPTR (work), BLEN (work), 63, gc));
++	dmsg (D_PACKET_CONTENT, "TAG: %s",
++		format_hex (BPTR (work) + work->len - 16, 16, 0, gc));
++
++	/* prepend the IV to the ciphertext */
++	if (opt->flags & CO_USE_IV)
++	  {
++	    uint8_t *output = buf_prepend (work, iv_size);
++	    ASSERT (output);
++	    memcpy (output, iv_buf, iv_size);
++	  }
++
++	return true;
++}
++
++static int
++aead_decrypt (struct buffer *buf, struct buffer *work,
++		const struct crypto_options *opt,
++		const struct frame* frame,
++		struct gc_arena *gc, struct packet_id_net *pin)
++{
++	EVP_AEAD_CTX *ae_ctx =
++		&((aead_ctx_t *)opt->key_ctx_bi->decrypt.cipher)->aead_ctx;
++	uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
++	int iv_size = EVP_AEAD_nonce_length (ae_ctx->aead);
++	size_t outlen;
++	int have_pin = 0;
++
++	/* initialize work buffer with FRAME_HEADROOM bytes of prepend capacity
++	*/
++#ifdef _ARM_ALIGNMENT
++	{
++	  unsigned align_err = (intptr_t) (work->data +
++		FRAME_HEADROOM_ADJ (frame, FRAME_HEADROOM_MARKER_DECRYPT)) &
++								ARM_ALIGN_MASK;
++	  ASSERT (buf_init (work,
++		FRAME_HEADROOM_ADJ (frame, FRAME_HEADROOM_MARKER_DECRYPT) +
++			(align_err ? ARM_ALIGN_VAL - align_err : 0)));
++	}
++#else
++	ASSERT (buf_init (work, FRAME_HEADROOM_ADJ
++				(frame, FRAME_HEADROOM_MARKER_DECRYPT)));
++#endif
++
++	/* use IV if user requested it */
++	CLEAR (iv_buf);
++
++	if (opt->flags & CO_USE_IV)
++	  {
++	    if (buf->len < iv_size)
++	      {
++	        msg (D_CRYPT_ERRORS, "Auth/Decrypt error: missing IV info");
++	        return 0;
++	      }
++	    memcpy (iv_buf, BPTR (buf), iv_size);
++	    ASSERT (buf_advance (buf, iv_size));
++	    dmsg (D_PACKET_CONTENT, "DECRYPT IV: %s",
++				format_hex (iv_buf, iv_size, 0, gc));
++	  }
++
++	if (buf->len < 1)
++	  {
++	    msg (D_CRYPT_ERRORS, "Auth/Decrypt error: missing payload");
++	    return 0;
++	  }
++
++	/* Buffer overflow check (should never happen) */
++	if (!buf_safe (work, buf->len))
++	  {
++	    msg (D_CRYPT_ERRORS, "Auth/Decrypt error: buffer overflow");
++	    return 0;
++	  }
++
++#ifdef _ARM_ALIGNMENT
++	opt->align_error[1] =
++			(uint8_t) ((intptr_t) BPTR (buf) & ARM_ALIGN_MASK);
++	dmsg (D_CRYPTO_DEBUG, "Dec-buf addr out:%p, in:%p, iv:%p",
++				BPTR (work), BPTR (buf), iv_buf);
++#endif
++	/* Decrypt packet ID, payload */
++	if (!EVP_AEAD_CTX_open (ae_ctx, BPTR (work), &outlen, buf->len,
++				iv_buf, iv_size, BPTR (buf), buf->len, NULL, 0))
++	  {
++	    msg (D_CRYPT_ERRORS, "Auth/Decrypt error: AEAD_CTX_open failed");
++	    return 0;
++	  }
++
++	work->len += outlen;
++
++	dmsg (D_PACKET_CONTENT, "DECRYPT TO: %s",
++		format_hex (BPTR (work), BLEN (work), 63, gc));
++
++	/* Get packet ID from plaintext buffer */
++	if (opt->packet_id)
++	  {
++	    if (!packet_id_read (pin, work,
++			BOOL_CAST (opt->flags & CO_PACKET_ID_LONG_FORM)))
++	      {
++	        msg (D_CRYPT_ERRORS, "Auth/Decrypt error: reading packet-id");
++	        return 0;
++	      }
++	    have_pin = 2;
++	  }
++
++	return have_pin + 1;
++}
++#endif
++
+ void
+ openvpn_encrypt (struct buffer *buf, struct buffer work,
+ 		 const struct crypto_options *opt,
+@@ -99,6 +288,14 @@
+       /* Do Encrypt from buf -> work */
+       if (ctx->cipher)
+ 	{
++#ifdef USE_EVP_AEAD
++        if (is_aead_ctx (ctx->cipher))
++	 {
++	    if (!aead_encrypt (buf, &work, opt, frame, &gc))
++		goto err;
++	 } else
++	 {
++#endif
+ 	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
+ 	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
+ 	  int block_size = cipher_ctx_block_size (ctx->cipher);
+@@ -191,6 +388,9 @@
+ 
+ 	  dmsg (D_PACKET_CONTENT, "ENCRYPT TO: %s",
+ 	       format_hex (BPTR (&work), BLEN (&work), 80, &gc));
++#ifdef USE_EVP_AEAD
++	 }
++#endif
+ 	}
+       else				/* No Encryption */
+ 	{
+@@ -290,6 +490,17 @@
+ 
+       if (ctx->cipher)
+ 	{
++#ifdef USE_EVP_AEAD
++        if (is_aead_ctx (ctx->cipher))
++	 {
++	    int ret = aead_decrypt (buf, &work, opt, frame, &gc, &pin);
++	    if (!ret)
++		goto error_exit;
++	    if (ret > 1)
++		have_pin = true;
++	 } else
++	 {
++#endif
+ 	  const unsigned int mode = cipher_ctx_mode (ctx->cipher);
+ 	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
+ 	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
+@@ -381,6 +592,9 @@
+ 		ASSERT (0);
+ 	      }
+ 	  }
++#ifdef USE_EVP_AEAD
++	 }
++#endif
+ 	}
+       else
+ 	{
+@@ -439,8 +653,13 @@
+ 			    (packet_id ? packet_id_size (packet_id_long_form) : 0) +
+ 			    ((cipher_defined && use_iv) ? cipher_kt_iv_size (kt->cipher) : 0) +
+ 			    (cipher_defined ? cipher_kt_block_size (kt->cipher) : 0) + /* worst case padding expansion */
++#ifdef USE_EVP_AEAD
++			    ((cipher_defined && (aead_mode (cipher_kt_mode (kt->cipher)) ||
++				is_aead_kt (kt->cipher))) ? EVP_AEAD_MAX_TAG_LENGTH : 0) +
++#else
+ 			    ((cipher_defined && aead_mode (cipher_kt_mode (kt->cipher))) ?
+ 			      aead_tag_len (cipher_kt_mode (kt->cipher)) : 0) +
++#endif
+ 			    kt->hmac_length);
+ }
+ 
+@@ -463,6 +682,11 @@
+       if (keysize > 0 && keysize <= MAX_CIPHER_KEY_LENGTH)
+ 	kt->cipher_length = keysize;
+ 
++#ifdef USE_EVP_AEAD
++      if (is_aead_kt(kt->cipher))
++        aead_cipher = true;
++      else
++#endif
+       /* check legal cipher mode */
+       {
+ 	const unsigned int mode = cipher_kt_mode (kt->cipher);
+@@ -512,6 +736,29 @@
+   if (kt->cipher && kt->cipher_length > 0)
+     {
+ 
++#ifdef USE_EVP_AEAD
++     if (is_aead_kt(kt->cipher))
++      {
++        aead_ctx_t *aead_ctx;
++        ALLOC_OBJ(aead_ctx, aead_ctx_t);
++        ctx->cipher = (cipher_ctx_t *)aead_ctx;
++
++        aead_ctx_init (aead_ctx, key->cipher, kt->cipher_length, kt->cipher);
++
++        msg (D_HANDSHAKE, "%s: Cipher '%s' initialized with %d bit key",
++		prefix, cipher_kt_name(kt->cipher), kt->cipher_length *8);
++
++        dmsg (D_SHOW_KEYS, "%s: CIPHER KEY: %s",
++		prefix,
++		format_hex (key->cipher, kt->cipher_length, 0, &gc));
++        dmsg (D_CRYPTO_DEBUG, "%s: CIPHER block_size=%d iv_size=%d",
++		prefix,
++		cipher_kt_block_size(kt->cipher),
++		cipher_kt_iv_size(kt->cipher));
++      }
++     else
++     {
++#endif
+       ALLOC_OBJ(ctx->cipher, cipher_ctx_t);
+       cipher_ctx_init (ctx->cipher, key->cipher, kt->cipher_length,
+ 	  kt->cipher, enc);
+@@ -527,6 +774,9 @@
+           prefix,
+           cipher_kt_block_size(kt->cipher),
+           cipher_kt_iv_size(kt->cipher));
++#ifdef USE_EVP_AEAD
++     }
++#endif
+     }
+   if (kt->digest && kt->hmac_length > 0)
+     {
+--- a/src/openvpn/crypto.h	2015-02-04 01:10:52.000000000 +0900
++++ b/src/openvpn/crypto.h	2015-02-05 00:58:21.000000000 +0900
+@@ -163,6 +163,12 @@
+                                  *   replay warnings. */
+   unsigned int flags;           /**< Bit-flags determining behavior of
+                                  *   security operation functions. */
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++#define ARM_ALIGN_VAL	_ARM_ALIGNMENT
++#define ARM_ALIGN_MASK (ARM_ALIGN_VAL - 1)
++  uint8_t *enc_buf;
++  uint8_t *align_error;
++#endif
+ };
+ 
+ #define RKF_MUST_SUCCEED (1<<0)
+--- a/src/openvpn/crypto_openssl.c	2015-02-04 01:12:30.000000000 +0900
++++ b/src/openvpn/crypto_openssl.c	2015-02-05 00:58:21.000000000 +0900
+@@ -330,6 +330,18 @@
+ 		     "variable" : "fixed"));
+ 	}
+     }
++#ifdef USE_EVP_AEAD
++#ifdef HAVE_EVP_AEAD_AES_128_GCM
++  printf ("aead.aes128-gcm 128 bit default key (fixed)\n");
++#endif
++#ifdef HAVE_EVP_AEAD_AES_256_GCM
++  printf ("aead.aes256-gcm 256 bit default key (fixed)\n");
++#endif
++#ifdef HAVE_EVP_AEAD_CHACHA20_POLY1305
++  printf ("aead.chacha20-poly1305 256 bit default key (fixed)\n");
++#endif
++#endif
++
+   printf ("\n");
+ }
+ 
+@@ -484,6 +496,32 @@
+  *
+  */
+ 
++#ifdef USE_EVP_AEAD
++#ifdef HAVE_EVP_AEAD_AES_128_GCM
++static aead_kt_t aead_aes128gcm = {
++  0x64616561,	/* "aead" */
++  0x38323161,	/* "a128" */
++  "AES-128-GCM",
++  NULL
++};
++#endif
++#ifdef HAVE_EVP_AEAD_AES_256_GCM
++static aead_kt_t aead_aes256gcm = {
++  0x64616561,	/* "aead" */
++  0x36353261,	/* "a256" */
++  "AES-256-GCM",
++  NULL
++};
++#endif
++#ifdef HAVE_EVP_AEAD_CHACHA20_POLY1305
++static aead_kt_t aead_chacha20poly1305 = {
++  0x64616561,	/* "aead" */
++  0x70303263,	/* "c20p" */
++  "ChaCha20-Poly1305",
++  NULL
++};
++#endif
++#endif
+ 
+ const EVP_CIPHER *
+ cipher_kt_get (const char *ciphername)
+@@ -492,6 +530,34 @@
+ 
+   ASSERT (ciphername);
+ 
++#ifdef USE_EVP_AEAD
++  if (!strncmp (ciphername, "aead.", 5))
++    {
++#ifdef HAVE_EVP_AEAD_AES_128_GCM
++      if (!strncmp (ciphername + 5, "aes128-gcm", 10))
++        {
++          aead_aes128gcm.e_aead = (EVP_AEAD *)EVP_aead_aes_128_gcm();
++          return (EVP_CIPHER *) (&aead_aes128gcm);
++        }
++#endif
++#ifdef HAVE_EVP_AEAD_AES_256_GCM
++      if (!strncmp (ciphername + 5, "aes256-gcm", 10))
++        {
++          aead_aes256gcm.e_aead = (EVP_AEAD *)EVP_aead_aes_256_gcm();
++          return (EVP_CIPHER *) (&aead_aes256gcm);
++        }
++#endif
++#ifdef HAVE_EVP_AEAD_CHACHA20_POLY1305
++      if (!strncmp (ciphername + 5, "chacha20-poly1305", 17))
++        {
++          aead_chacha20poly1305.e_aead =
++			(EVP_AEAD *)EVP_aead_chacha20_poly1305();
++          return (EVP_CIPHER *) (&aead_chacha20poly1305);
++        }
++#endif
++    }
++#endif
++
+   cipher = EVP_get_cipherbyname (ciphername);
+ 
+   if ((NULL == cipher) || !cipher_ok (OBJ_nid2sn (EVP_CIPHER_nid (cipher))))
+@@ -511,24 +577,40 @@
+ {
+   if (NULL == cipher_kt)
+     return "[null-cipher]";
++#ifdef USE_EVP_AEAD
++  if (is_aead_kt(cipher_kt))
++    return ((aead_kt_t *)cipher_kt)->csname;
++#endif
+   return EVP_CIPHER_name (cipher_kt);
+ }
+ 
+ int
+ cipher_kt_key_size (const EVP_CIPHER *cipher_kt)
+ {
++#ifdef USE_EVP_AEAD
++  if (is_aead_kt(cipher_kt))
++    return EVP_AEAD_key_length (((aead_kt_t *)cipher_kt)->e_aead);
++#endif
+   return EVP_CIPHER_key_length (cipher_kt);
+ }
+ 
+ int
+ cipher_kt_iv_size (const EVP_CIPHER *cipher_kt)
+ {
++#ifdef USE_EVP_AEAD
++  if (is_aead_kt(cipher_kt))
++    return EVP_AEAD_nonce_length (((aead_kt_t *)cipher_kt)->e_aead);
++#endif
+   return EVP_CIPHER_iv_length (cipher_kt);
+ }
+ 
+ int
+ cipher_kt_block_size (const EVP_CIPHER *cipher_kt)
+ {
++#ifdef USE_EVP_AEAD
++  if (is_aead_kt(cipher_kt))
++    return 1;
++#endif
+   return EVP_CIPHER_block_size (cipher_kt);
+ }
+ 
+@@ -536,6 +618,10 @@
+ cipher_kt_mode (const EVP_CIPHER *cipher_kt)
+ {
+   ASSERT(NULL != cipher_kt);
++#ifdef USE_EVP_AEAD
++  if (is_aead_kt(cipher_kt))
++    return 0;
++#endif
+   return EVP_CIPHER_mode (cipher_kt);
+ }
+ 
+@@ -546,6 +632,25 @@
+  */
+ 
+ 
++#ifdef USE_EVP_AEAD
++void
++aead_ctx_init (aead_ctx_t *ctx, uint8_t *key, int key_len,
++    const EVP_CIPHER *kt)
++{
++  EVP_AEAD *aead = ((aead_kt_t *) kt)->e_aead;
++
++  ASSERT(NULL != aead && NULL != kt && NULL != ctx);
++
++  CLEAR (*ctx);
++  ctx->magic = 0x64616561;
++
++  if (!EVP_AEAD_CTX_init (&ctx->aead_ctx, aead, key, key_len,
++        EVP_AEAD_max_tag_len(aead), NULL))
++    msg (M_SSLERR, "EVP aead_cipher init");
++
++}
++#endif
++
+ void
+ cipher_ctx_init (EVP_CIPHER_CTX *ctx, uint8_t *key, int key_len,
+     const EVP_CIPHER *kt, int enc)
+@@ -571,6 +676,13 @@
+ void
+ cipher_ctx_cleanup (EVP_CIPHER_CTX *ctx)
+ {
++#ifdef USE_EVP_AEAD
++  if (is_aead_ctx (ctx))
++    {
++      EVP_AEAD_CTX_cleanup (&((aead_ctx_t *) ctx)->aead_ctx);
++      return;
++    }
++#endif
+   EVP_CIPHER_CTX_cleanup (ctx);
+ }
+ 
+--- a/src/openvpn/crypto_openssl.h	2015-02-04 01:13:42.000000000 +0900
++++ b/src/openvpn/crypto_openssl.h	2015-02-05 00:58:21.000000000 +0900
+@@ -34,6 +34,34 @@
+ #include <openssl/hmac.h>
+ #include <openssl/md5.h>
+ 
++#ifdef USE_EVP_AEAD
++typedef struct _aead_kt
++{
++  const int magic;
++  const int csid;
++  const char *csname;
++  EVP_AEAD *e_aead;
++} aead_kt_t;
++
++static inline bool
++is_aead_kt (const EVP_CIPHER *cipher)
++{
++  return ((aead_kt_t *) cipher)->magic == 0x64616561;
++}
++
++typedef struct _aead_ctx
++{
++  int magic;
++  EVP_AEAD_CTX aead_ctx;
++} aead_ctx_t;
++
++static inline bool
++is_aead_ctx (const EVP_CIPHER_CTX *ctx)
++{
++  return ((aead_ctx_t *) ctx)->magic == 0x64616561;
++}
++#endif
++
+ /** Generic cipher key type %context. */
+ typedef EVP_CIPHER cipher_kt_t;
+ 
+--- a/src/openvpn/forward.c	2014-05-01 20:12:22.000000000 +0900
++++ b/src/openvpn/forward.c	2015-02-05 00:58:21.000000000 +0900
+@@ -669,7 +669,15 @@
+   perf_push (PERF_READ_IN_LINK);
+ 
+   c->c2.buf = c->c2.buffers->read_link_buf;
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  if (c->c2.buffers->align_err[1])
++    c->c2.buffers->align_offset_dec = ARM_ALIGN_VAL - c->c2.buffers->align_err[1];
++  ASSERT (buf_init (&c->c2.buf,
++	FRAME_HEADROOM_ADJ (&c->c2.frame, FRAME_HEADROOM_MARKER_READ_LINK) +
++		c->c2.buffers->align_offset_dec));
++#else
+   ASSERT (buf_init (&c->c2.buf, FRAME_HEADROOM_ADJ (&c->c2.frame, FRAME_HEADROOM_MARKER_READ_LINK)));
++#endif
+ 
+   status = link_socket_read (c->c2.link_socket,
+ 			     &c->c2.buf,
+@@ -930,7 +938,14 @@
+ #ifdef TUN_PASS_BUFFER
+   read_tun_buffered (c->c1.tuntap, &c->c2.buf, MAX_RW_SIZE_TUN (&c->c2.frame));
+ #else
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  if (c->c2.buffers->align_err[0])
++    c->c2.buffers->align_offset_enc = ARM_ALIGN_VAL - c->c2.buffers->align_err[0];
++  ASSERT (buf_init (&c->c2.buf, FRAME_HEADROOM (&c->c2.frame) +
++		c->c2.buffers->align_offset_enc));
++#else
+   ASSERT (buf_init (&c->c2.buf, FRAME_HEADROOM (&c->c2.frame)));
++#endif
+   ASSERT (buf_safe (&c->c2.buf, MAX_RW_SIZE_TUN (&c->c2.frame)));
+   c->c2.buf.len = read_tun (c->c1.tuntap, BPTR (&c->c2.buf), MAX_RW_SIZE_TUN (&c->c2.frame));
+ #endif
+--- a/src/openvpn/init.c	2014-05-01 20:12:22.000000000 +0900
++++ b/src/openvpn/init.c	2015-02-05 00:58:21.000000000 +0900
+@@ -2510,17 +2510,22 @@
+ init_context_buffers (const struct frame *frame)
+ {
+   struct context_buffers *b;
++#ifdef ARM_ALIGN_VAL
++  const unsigned ad = ARM_ALIGN_VAL - 1;
++#else
++  const unsigned ad = 0;
++#endif
+ 
+   ALLOC_OBJ_CLEAR (b, struct context_buffers);
+ 
+-  b->read_link_buf = alloc_buf (BUF_SIZE (frame));
+-  b->read_tun_buf = alloc_buf (BUF_SIZE (frame));
++  b->read_link_buf = alloc_buf (BUF_SIZE (frame) + ad);
++  b->read_tun_buf = alloc_buf (BUF_SIZE (frame) + ad);
+ 
+   b->aux_buf = alloc_buf (BUF_SIZE (frame));
+ 
+ #ifdef ENABLE_CRYPTO
+-  b->encrypt_buf = alloc_buf (BUF_SIZE (frame));
+-  b->decrypt_buf = alloc_buf (BUF_SIZE (frame));
++  b->encrypt_buf = alloc_buf (BUF_SIZE (frame) + ad);
++  b->decrypt_buf = alloc_buf (BUF_SIZE (frame) + ad);
+ #endif
+ 
+ #ifdef ENABLE_LZO
+@@ -2563,6 +2568,10 @@
+ {
+   c->c2.buffers = init_context_buffers (&c->c2.frame);
+   c->c2.buffers_owned = true;
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  c->c2.crypto_options.enc_buf = BPTR (&c->c2.buffers->read_tun_buf);
++  c->c2.crypto_options.align_error = c->c2.buffers->align_err;
++#endif
+ }
+ 
+ #ifdef ENABLE_FRAGMENT
+--- a/src/openvpn/openvpn.h	2014-05-01 20:12:22.000000000 +0900
++++ b/src/openvpn/openvpn.h	2015-02-05 00:58:21.000000000 +0900
+@@ -116,6 +116,11 @@
+    */
+   struct buffer read_link_buf;
+   struct buffer read_tun_buf;
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  uint8_t align_offset_enc;
++  uint8_t align_offset_dec;
++  uint8_t align_err[2];
++#endif
+ };
+ 
+ /*

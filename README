@@ -1,22 +1,15 @@
 OpenVPN
+ additional ciphers on Debian/Ubuntu
 
 Support AES-GCM, AES-CTR and AES-XTS cipher modes.
-For Debian/Ubuntu packages.
+Support EVP_AEAD ciphers when installed EVP_AEAD APIs supported OpenSSL
+ (https://github.com/h-yamamo/openssl-chacha20poly1305).
 
 Reference:
   https://community.openvpn.net/openvpn/attachment/ticket/301
   [0001-Add-AEAD-cipher-modes.patch]
 
-How to make the package:
-
-*Debian 7.8 (wheezy) # add backports apt-line
-  (in some directory)
-  apt-get -d -t wheezy-backports source openvpn
-  tar xf openvpn_2.3.2.orig.tar.gz
-  cd openvpn-2.3.2
-  tar xvf ../openvpn_2.3.2-7~bpo70+2.debian.tar.gz
-  cp -a (this repository)/wheezy-backports/debian/* debian/
-  debuild -uc -us
+Build package:
 
 *Debian 8 (jessie)
   (in some directory)
@@ -36,6 +29,9 @@ How to make the package:
   cp -a (this repository)/trusty/debian/* debian/
   debuild -uc -us
 
-Usage with AES-GCM cipher mode:
-  openvpn --cipher id-aes128-GCM --auth none ...
+Usage with ChaCha20-Poly1305 cipher:
+  openvpn --cipher aead.chacha20-poly1305 --auth none ...
+
+Show available ciphers:
+  openvpn --show-ciphers
 

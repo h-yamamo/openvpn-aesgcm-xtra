@@ -11,3 +11,4 @@ client_connect_tmp_files.patch
 0001-Drop-too-short-control-channel-packets-instead-of-as.patch
 update_sample_certs.patch
 xtra-cipher-modes.patch
+evp-aead.patch
