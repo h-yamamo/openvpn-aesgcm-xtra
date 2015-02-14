@@ -30,7 +30,7 @@ Build package:
   debuild -uc -us
 
 Usage with ChaCha20-Poly1305 cipher:
-  openvpn --cipher aead.chacha20-poly1305 --auth none ...
+  openvpn --cipher aead.chacha20-poly1305 ...
 
 Show available ciphers:
   openvpn --show-ciphers

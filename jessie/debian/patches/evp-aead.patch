@@ -68,8 +68,8 @@
  		;;
  	polarssl)
  		have_crypto_crypto="${have_polarssl_crypto}"
---- a/src/openvpn/crypto.c	2015-02-04 01:08:36.000000000 +0900
-+++ b/src/openvpn/crypto.c	2015-02-05 00:58:21.000000000 +0900
+--- a/src/openvpn/crypto.c	2015-02-13 00:14:04.000000000 +0900
++++ b/src/openvpn/crypto.c	2015-02-14 21:51:24.000000000 +0900
 @@ -83,6 +83,195 @@
    return ret;
  }
@@ -82,7 +82,7 @@
 +		const struct frame* frame, struct gc_arena *gc)
 +{
 +	EVP_AEAD_CTX *ae_ctx =
-+		&((aead_ctx_t *)opt->key_ctx_bi->encrypt.cipher)->aead_ctx;
++		&((aead_ctx_t *) opt->key_ctx_bi->encrypt.cipher)->aead_ctx;
 +	uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
 +	int iv_size = EVP_AEAD_nonce_length (ae_ctx->aead);
 +	int overhead = EVP_AEAD_MAX_TAG_LENGTH;
@@ -177,7 +177,7 @@
 +		struct gc_arena *gc, struct packet_id_net *pin)
 +{
 +	EVP_AEAD_CTX *ae_ctx =
-+		&((aead_ctx_t *)opt->key_ctx_bi->decrypt.cipher)->aead_ctx;
++		&((aead_ctx_t *) opt->key_ctx_bi->decrypt.cipher)->aead_ctx;
 +	uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
 +	int iv_size = EVP_AEAD_nonce_length (ae_ctx->aead);
 +	size_t outlen;
@@ -280,8 +280,8 @@
 +#endif
  	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
  	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
- 	  int block_size = cipher_ctx_block_size (ctx->cipher);
-@@ -191,6 +388,9 @@
+ 	  const int block_size = cipher_ctx_block_size (ctx->cipher);
+@@ -196,6 +393,9 @@
  
  	  dmsg (D_PACKET_CONTENT, "ENCRYPT TO: %s",
  	       format_hex (BPTR (&work), BLEN (&work), 80, &gc));
@@ -291,7 +291,40 @@
  	}
        else				/* No Encryption */
  	{
-@@ -290,6 +490,17 @@
+@@ -208,6 +408,11 @@
+ 	  work = *buf;
+ 	}
+ 
++#ifdef USE_EVP_AEAD
++      if (ctx->cipher && is_aead_ctx (ctx->cipher))
++	; /* bypass hmac */
++      else
++#endif
+ #ifdef USE_XTRA_CIPHER_MODES
+       if (aead_mode (mode))
+ 	{
+@@ -268,10 +473,18 @@
+       struct key_ctx *ctx = &opt->key_ctx_bi->decrypt;
+       struct packet_id_net pin;
+       bool have_pin = false;
+-      const unsigned int mode = ctx->cipher ? cipher_ctx_mode (ctx->cipher) : 0;
++      unsigned int mode = 0;
+ 
++#ifdef USE_EVP_AEAD
++      if (ctx->cipher && is_aead_ctx (ctx->cipher))
++	; /* bypass hmac */
++      else
++#endif
++      if (ctx->cipher && (mode = cipher_ctx_mode (ctx->cipher)) == 0xf0007)
++	; /* not come here */
++      else
+ #ifdef USE_XTRA_CIPHER_MODES
+-      if (aead_mode (mode))
++      if (ctx->cipher && aead_mode (mode))
+ 	; /* bypass hmac */
+       else
+ #endif
+@@ -304,6 +517,17 @@
  
        if (ctx->cipher)
  	{
@@ -306,10 +339,10 @@
 +	 } else
 +	 {
 +#endif
- 	  const unsigned int mode = cipher_ctx_mode (ctx->cipher);
  	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
  	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
-@@ -381,6 +592,9 @@
+ 	  int outlen;
+@@ -400,6 +624,9 @@
  		ASSERT (0);
  	      }
  	  }
@@ -319,55 +352,50 @@
  	}
        else
  	{
-@@ -439,8 +653,13 @@
- 			    (packet_id ? packet_id_size (packet_id_long_form) : 0) +
- 			    ((cipher_defined && use_iv) ? cipher_kt_iv_size (kt->cipher) : 0) +
- 			    (cipher_defined ? cipher_kt_block_size (kt->cipher) : 0) + /* worst case padding expansion */
-+#ifdef USE_EVP_AEAD
-+			    ((cipher_defined && (aead_mode (cipher_kt_mode (kt->cipher)) ||
-+				is_aead_kt (kt->cipher))) ? EVP_AEAD_MAX_TAG_LENGTH : 0) +
-+#else
- 			    ((cipher_defined && aead_mode (cipher_kt_mode (kt->cipher))) ?
- 			      aead_tag_len (cipher_kt_mode (kt->cipher)) : 0) +
-+#endif
- 			    kt->hmac_length);
- }
- 
-@@ -463,6 +682,11 @@
-       if (keysize > 0 && keysize <= MAX_CIPHER_KEY_LENGTH)
- 	kt->cipher_length = keysize;
+@@ -456,6 +683,10 @@
+ {
+   unsigned int taglen = 0;
  
 +#ifdef USE_EVP_AEAD
-+      if (is_aead_kt(kt->cipher))
-+        aead_cipher = true;
-+      else
++  if (cipher_defined && is_aead_kt (kt->cipher))
++    taglen = EVP_AEAD_MAX_TAG_LENGTH;
 +#endif
-       /* check legal cipher mode */
-       {
- 	const unsigned int mode = cipher_kt_mode (kt->cipher);
-@@ -512,6 +736,29 @@
+ #ifdef USE_XTRA_CIPHER_MODES
+   if (cipher_defined && aead_mode (cipher_kt_mode (kt->cipher)))
+     taglen = aead_tag_len (cipher_kt_mode (kt->cipher));
+@@ -494,6 +725,9 @@
+ #ifdef USE_XTRA_CIPHER_MODES
+ 	      || all_xtra_mode (mode)
+ #endif
++#ifdef USE_EVP_AEAD
++	      || is_aead_kt (kt->cipher)
++#endif
+ 	      ))
+ #ifdef ENABLE_SMALL
+ 	  msg (M_FATAL, "Cipher '%s' mode not supported", ciphername);
+@@ -529,7 +763,28 @@
+   CLEAR (*ctx);
    if (kt->cipher && kt->cipher_length > 0)
      {
- 
+-
 +#ifdef USE_EVP_AEAD
-+     if (is_aead_kt(kt->cipher))
++     if (is_aead_kt (kt->cipher))
 +      {
 +        aead_ctx_t *aead_ctx;
-+        ALLOC_OBJ(aead_ctx, aead_ctx_t);
-+        ctx->cipher = (cipher_ctx_t *)aead_ctx;
++        ALLOC_OBJ (aead_ctx, aead_ctx_t);
++        ctx->cipher = (cipher_ctx_t *) aead_ctx;
 +
 +        aead_ctx_init (aead_ctx, key->cipher, kt->cipher_length, kt->cipher);
 +
 +        msg (D_HANDSHAKE, "%s: Cipher '%s' initialized with %d bit key",
-+		prefix, cipher_kt_name(kt->cipher), kt->cipher_length *8);
++		prefix, cipher_kt_name (kt->cipher), kt->cipher_length * 8);
 +
 +        dmsg (D_SHOW_KEYS, "%s: CIPHER KEY: %s",
-+		prefix,
-+		format_hex (key->cipher, kt->cipher_length, 0, &gc));
++		prefix, format_hex (key->cipher, kt->cipher_length, 0, &gc));
 +        dmsg (D_CRYPTO_DEBUG, "%s: CIPHER block_size=%d iv_size=%d",
 +		prefix,
-+		cipher_kt_block_size(kt->cipher),
-+		cipher_kt_iv_size(kt->cipher));
++		cipher_kt_block_size (kt->cipher),
++		cipher_kt_iv_size (kt->cipher));
 +      }
 +     else
 +     {
@@ -375,7 +403,7 @@
        ALLOC_OBJ(ctx->cipher, cipher_ctx_t);
        cipher_ctx_init (ctx->cipher, key->cipher, kt->cipher_length,
  	  kt->cipher, enc);
-@@ -527,6 +774,9 @@
+@@ -545,7 +800,16 @@
            prefix,
            cipher_kt_block_size(kt->cipher),
            cipher_kt_iv_size(kt->cipher));
@@ -383,8 +411,15 @@
 +     }
 +#endif
      }
-   if (kt->digest && kt->hmac_length > 0)
-     {
++
++#ifdef USE_EVP_AEAD
++  if (kt->cipher && is_aead_kt (kt->cipher))
++    ; /* bypass hmac */
++  else
++#endif
+ #ifdef USE_XTRA_CIPHER_MODES
+   if (kt->cipher && aead_mode (cipher_kt_mode (kt->cipher)))
+     ; /* bypass hmac */
 --- a/src/openvpn/crypto.h	2015-02-04 01:10:52.000000000 +0900
 +++ b/src/openvpn/crypto.h	2015-02-05 00:58:21.000000000 +0900
 @@ -163,6 +163,12 @@
@@ -400,8 +435,8 @@
  };
  
  #define RKF_MUST_SUCCEED (1<<0)
---- a/src/openvpn/crypto_openssl.c	2015-02-04 01:12:30.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.c	2015-02-05 00:58:21.000000000 +0900
+--- a/src/openvpn/crypto_openssl.c	2015-02-13 00:14:04.000000000 +0900
++++ b/src/openvpn/crypto_openssl.c	2015-02-14 02:42:10.000000000 +0900
 @@ -330,6 +330,18 @@
  		     "variable" : "fixed"));
  	}
@@ -464,14 +499,14 @@
 +#ifdef HAVE_EVP_AEAD_AES_128_GCM
 +      if (!strncmp (ciphername + 5, "aes128-gcm", 10))
 +        {
-+          aead_aes128gcm.e_aead = (EVP_AEAD *)EVP_aead_aes_128_gcm();
++          aead_aes128gcm.e_aead = (EVP_AEAD *) EVP_aead_aes_128_gcm();
 +          return (EVP_CIPHER *) (&aead_aes128gcm);
 +        }
 +#endif
 +#ifdef HAVE_EVP_AEAD_AES_256_GCM
 +      if (!strncmp (ciphername + 5, "aes256-gcm", 10))
 +        {
-+          aead_aes256gcm.e_aead = (EVP_AEAD *)EVP_aead_aes_256_gcm();
++          aead_aes256gcm.e_aead = (EVP_AEAD *) EVP_aead_aes_256_gcm();
 +          return (EVP_CIPHER *) (&aead_aes256gcm);
 +        }
 +#endif
@@ -479,7 +514,7 @@
 +      if (!strncmp (ciphername + 5, "chacha20-poly1305", 17))
 +        {
 +          aead_chacha20poly1305.e_aead =
-+			(EVP_AEAD *)EVP_aead_chacha20_poly1305();
++			(EVP_AEAD *) EVP_aead_chacha20_poly1305();
 +          return (EVP_CIPHER *) (&aead_chacha20poly1305);
 +        }
 +#endif
@@ -494,8 +529,8 @@
    if (NULL == cipher_kt)
      return "[null-cipher]";
 +#ifdef USE_EVP_AEAD
-+  if (is_aead_kt(cipher_kt))
-+    return ((aead_kt_t *)cipher_kt)->csname;
++  if (is_aead_kt (cipher_kt))
++    return ((aead_kt_t *) cipher_kt)->csname;
 +#endif
    return EVP_CIPHER_name (cipher_kt);
  }
@@ -504,8 +539,8 @@
  cipher_kt_key_size (const EVP_CIPHER *cipher_kt)
  {
 +#ifdef USE_EVP_AEAD
-+  if (is_aead_kt(cipher_kt))
-+    return EVP_AEAD_key_length (((aead_kt_t *)cipher_kt)->e_aead);
++  if (is_aead_kt (cipher_kt))
++    return EVP_AEAD_key_length (((aead_kt_t *) cipher_kt)->e_aead);
 +#endif
    return EVP_CIPHER_key_length (cipher_kt);
  }
@@ -514,8 +549,8 @@
  cipher_kt_iv_size (const EVP_CIPHER *cipher_kt)
  {
 +#ifdef USE_EVP_AEAD
-+  if (is_aead_kt(cipher_kt))
-+    return EVP_AEAD_nonce_length (((aead_kt_t *)cipher_kt)->e_aead);
++  if (is_aead_kt (cipher_kt))
++    return EVP_AEAD_nonce_length (((aead_kt_t *) cipher_kt)->e_aead);
 +#endif
    return EVP_CIPHER_iv_length (cipher_kt);
  }
@@ -524,7 +559,7 @@
  cipher_kt_block_size (const EVP_CIPHER *cipher_kt)
  {
 +#ifdef USE_EVP_AEAD
-+  if (is_aead_kt(cipher_kt))
++  if (is_aead_kt (cipher_kt))
 +    return 1;
 +#endif
    return EVP_CIPHER_block_size (cipher_kt);
@@ -535,7 +570,7 @@
  {
    ASSERT(NULL != cipher_kt);
 +#ifdef USE_EVP_AEAD
-+  if (is_aead_kt(cipher_kt))
++  if (is_aead_kt (cipher_kt))
 +    return 0;
 +#endif
    return EVP_CIPHER_mode (cipher_kt);
@@ -552,13 +587,13 @@
 +{
 +  EVP_AEAD *aead = ((aead_kt_t *) kt)->e_aead;
 +
-+  ASSERT(NULL != aead && NULL != kt && NULL != ctx);
++  ASSERT (NULL != aead && NULL != kt && NULL != ctx);
 +
 +  CLEAR (*ctx);
 +  ctx->magic = 0x64616561;
 +
 +  if (!EVP_AEAD_CTX_init (&ctx->aead_ctx, aead, key, key_len,
-+        EVP_AEAD_max_tag_len(aead), NULL))
++        EVP_AEAD_max_tag_len (aead), NULL))
 +    msg (M_SSLERR, "EVP aead_cipher init");
 +
 +}
@@ -582,8 +617,8 @@
  }
  
 --- a/src/openvpn/crypto_openssl.h	2015-02-04 01:13:42.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.h	2015-02-05 00:58:21.000000000 +0900
-@@ -34,6 +34,34 @@
++++ b/src/openvpn/crypto_openssl.h	2015-02-14 21:58:10.000000000 +0900
+@@ -34,6 +34,37 @@
  #include <openssl/hmac.h>
  #include <openssl/md5.h>
  
@@ -613,6 +648,9 @@
 +{
 +  return ((aead_ctx_t *) ctx)->magic == 0x64616561;
 +}
++
++void aead_ctx_init (aead_ctx_t *ctx, uint8_t *key, int key_len,
++	const EVP_CIPHER *kt);
 +#endif
 +
  /** Generic cipher key type %context. */
