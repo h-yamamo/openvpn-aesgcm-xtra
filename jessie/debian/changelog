@@ -1,3 +1,11 @@
+openvpn (2.3.4-5+ore2) jessie; urgency=low
+
+  * Fix not work tls-auth even though specified --tls-auth when
+    using an AEAD cipher.
+  * Rewrite patch.
+
+ -- Ore sama <oresama@hoge.japan>  Fri, 13 Feb 2015 00:08:26 +0900
+
 openvpn (2.3.4-5+ore1) unstable; urgency=low
 
   * Non-maintainer release.

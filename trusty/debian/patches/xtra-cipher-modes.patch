@@ -47,8 +47,8 @@
  	polarssl)
  		have_crypto_crypto="${have_polarssl_crypto}"
 --- a/src/openvpn/crypto.c	2014-05-01 20:12:22.000000000 +0900
-+++ b/src/openvpn/crypto.c	2015-02-04 01:08:36.000000000 +0900
-@@ -94,16 +94,21 @@
++++ b/src/openvpn/crypto.c	2015-02-12 23:58:14.000000000 +0900
+@@ -94,16 +94,26 @@
    if (buf->len > 0 && opt->key_ctx_bi)
      {
        struct key_ctx *ctx = &opt->key_ctx_bi->encrypt;
@@ -60,19 +60,24 @@
  	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
  	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
 -	  const unsigned int mode = cipher_ctx_mode (ctx->cipher);
-+	  int block_size = cipher_ctx_block_size (ctx->cipher);
-+	  mode = cipher_ctx_mode (ctx->cipher);
++	  const int block_size = cipher_ctx_block_size (ctx->cipher);
  	  int outlen;
  
 -	  if (mode == OPENVPN_MODE_CBC)
++	  mode = cipher_ctx_mode (ctx->cipher);
++#ifdef USE_XTRA_CIPHER_MODES
 +	  if (all_xtra_mode (mode))
 +	    ASSERT (opt->flags & CO_USE_IV);	/* IV required */
-+
-+	  if (mode == OPENVPN_MODE_CBC || all_xtra_mode (mode))
++#endif
++	  if (mode == OPENVPN_MODE_CBC
++#ifdef USE_XTRA_CIPHER_MODES
++	      || all_xtra_mode (mode)
++#endif
++	      )
  	    {
  	      CLEAR (iv_buf);
  
-@@ -132,7 +137,7 @@
+@@ -132,7 +142,7 @@
  	      buf_set_write (&b, iv_buf, iv_size);
  	      ASSERT (packet_id_write (&pin, &b, true, false));
  	    }
@@ -81,7 +86,7 @@
  	    {
  	      ASSERT (0);
  	    }
-@@ -151,7 +156,7 @@
+@@ -151,7 +161,7 @@
  	  ASSERT (cipher_ctx_reset(ctx->cipher, iv_buf));
  
  	  /* Buffer overflow check */
@@ -90,7 +95,7 @@
  	    {
  	      msg (D_CRYPT_ERRORS, "ENCRYPT: buffer size error, bc=%d bo=%d bl=%d wc=%d wo=%d wl=%d cbs=%d",
  		   buf->capacity,
-@@ -160,7 +165,7 @@
+@@ -160,7 +170,7 @@
  		   work.capacity,
  		   work.offset,
  		   work.len,
@@ -99,7 +104,7 @@
  	      goto err;
  	    }
  
-@@ -171,7 +176,10 @@
+@@ -171,7 +181,10 @@
  	  /* Flush the encryption buffer */
  	  ASSERT(cipher_ctx_final(ctx->cipher, BPTR (&work) + outlen, &outlen));
  	  work.len += outlen;
@@ -111,13 +116,14 @@
  
  	  /* prepend the IV to the ciphertext */
  	  if (opt->flags & CO_USE_IV)
-@@ -206,6 +214,16 @@
- 	  ASSERT (output);
- 	  hmac_ctx_final (ctx->hmac, output);
+@@ -195,6 +208,19 @@
+ 	  work = *buf;
  	}
-+      else if (aead_mode (mode))
+ 
++#ifdef USE_XTRA_CIPHER_MODES
++      if (aead_mode (mode))
 +	{
-+	  int tag_len = aead_tag_len (mode);
++	  const int tag_len = aead_tag_len (mode);
 +	  uint8_t* output = NULL;
 +
 +	  output = buf_prepend (&work, tag_len);
@@ -125,20 +131,42 @@
 +	  ASSERT (cipher_ctx_get_tag (ctx->cipher, output, tag_len));
 +	  dmsg (D_PACKET_CONTENT, "AEAD TAG: %s", format_hex (output, tag_len, 0, &gc));
 +	}
++      else
++#endif
+       /* HMAC the ciphertext (or plaintext if !cipher) */
+       if (ctx->hmac)
+ 	{
+@@ -242,7 +268,13 @@
+       struct key_ctx *ctx = &opt->key_ctx_bi->decrypt;
+       struct packet_id_net pin;
+       bool have_pin = false;
++      const unsigned int mode = ctx->cipher ? cipher_ctx_mode (ctx->cipher) : 0;
  
-       *buf = work;
-     }
-@@ -275,11 +293,22 @@
- 	  const unsigned int mode = cipher_ctx_mode (ctx->cipher);
++#ifdef USE_XTRA_CIPHER_MODES
++      if (aead_mode (mode))
++	; /* bypass hmac */
++      else
++#endif
+       /* Verify the HMAC */
+       if (ctx->hmac)
+ 	{
+@@ -272,14 +304,27 @@
+ 
+       if (ctx->cipher)
+ 	{
+-	  const unsigned int mode = cipher_ctx_mode (ctx->cipher);
  	  const int iv_size = cipher_ctx_iv_length (ctx->cipher);
  	  uint8_t iv_buf[OPENVPN_MAX_IV_LENGTH];
-+	  uint8_t tag_buf[OPENVPN_AEAD_TAG_LENGTH]; /* tag of AEAD ciphertext */
-+	  int tag_len = aead_tag_len (mode);
  	  int outlen;
++#ifdef USE_XTRA_CIPHER_MODES
++	  uint8_t tag_buf[OPENVPN_AEAD_TAG_LENGTH]; /* tag of AEAD ciphertext */
++	  const int tag_len = aead_tag_len (mode);
++#endif
  
  	  /* initialize work buffer with FRAME_HEADROOM bytes of prepend capacity */
  	  ASSERT (buf_init (&work, FRAME_HEADROOM_ADJ (frame, FRAME_HEADROOM_MARKER_DECRYPT)));
  
++#ifdef USE_XTRA_CIPHER_MODES
 +	  /* for AEAD ciphers, keep the tag value to feed in later */
 +	  if (aead_mode (mode))
 +	    {
@@ -147,29 +175,32 @@
 +	      ASSERT (buf_advance (buf, tag_len));
 +	      dmsg (D_PACKET_CONTENT, "AEAD TAG: %s", format_hex (tag_buf, tag_len, 0, &gc));
 +	    }
-+
++#endif
  	  /* use IV if user requested it */
  	  CLEAR (iv_buf);
  	  if (opt->flags & CO_USE_IV)
-@@ -305,6 +334,12 @@
+@@ -305,6 +350,11 @@
  	  if (!buf_safe (&work, buf->len))
  	    CRYPT_ERROR ("buffer overflow");
  
++#ifdef USE_XTRA_CIPHER_MODES
 +	  /* feed in tag and the authenticated data for AEAD mode ciphers */
 +	  if (aead_mode (mode))
-+	    {
-+	      ASSERT (cipher_ctx_set_tag (ctx->cipher, tag_buf, tag_len));
-+	    }
-+
++	    ASSERT (cipher_ctx_set_tag (ctx->cipher, tag_buf, tag_len));
++#endif
  	  /* Decrypt packet ID, payload */
  	  if (!cipher_ctx_update (ctx->cipher, BPTR (&work), &outlen, BPTR (buf), BLEN (buf)))
  	    CRYPT_ERROR ("cipher update failed");
-@@ -320,12 +355,12 @@
+@@ -320,12 +370,16 @@
  
  	  /* Get packet ID from plaintext buffer or IV, depending on cipher mode */
  	  {
 -	    if (mode == OPENVPN_MODE_CBC)
-+	    if (mode == OPENVPN_MODE_CBC || all_xtra_mode (mode))
++	    if (mode == OPENVPN_MODE_CBC
++#ifdef USE_XTRA_CIPHER_MODES
++		|| all_xtra_mode (mode)
++#endif
++	       )
  	      {
  		if (opt->packet_id)
  		  {
@@ -179,7 +210,7 @@
  		    have_pin = true;
  		  }
  	      }
-@@ -341,7 +376,7 @@
+@@ -341,7 +395,7 @@
  		  CRYPT_ERROR ("error reading CFB/OFB packet-id");
  		have_pin = true;
  	      }
@@ -188,97 +219,82 @@
  	      {
  		ASSERT (0);
  	      }
-@@ -404,6 +439,8 @@
+@@ -400,11 +454,17 @@
+ 			       bool packet_id,
+ 			       bool packet_id_long_form)
+ {
++  unsigned int taglen = 0;
++
++#ifdef USE_XTRA_CIPHER_MODES
++  if (cipher_defined && aead_mode (cipher_kt_mode (kt->cipher)))
++    taglen = aead_tag_len (cipher_kt_mode (kt->cipher));
++#endif
+   frame_add_to_extra_frame (frame,
  			    (packet_id ? packet_id_size (packet_id_long_form) : 0) +
  			    ((cipher_defined && use_iv) ? cipher_kt_iv_size (kt->cipher) : 0) +
  			    (cipher_defined ? cipher_kt_block_size (kt->cipher) : 0) + /* worst case padding expansion */
-+			    ((cipher_defined && aead_mode (cipher_kt_mode (kt->cipher))) ?
-+			      aead_tag_len (cipher_kt_mode (kt->cipher)) : 0) +
- 			    kt->hmac_length);
+-			    kt->hmac_length);
++			    (taglen ? taglen : kt->hmac_length));
  }
  
-@@ -416,6 +453,8 @@
- 	       bool authname_defined, int keysize,
- 	       bool cfb_ofb_allowed, bool warn)
- {
-+  bool aead_cipher = false;
-+
-   CLEAR (*kt);
-   if (ciphername && ciphername_defined)
-     {
-@@ -427,7 +466,8 @@
-       /* check legal cipher mode */
-       {
- 	const unsigned int mode = cipher_kt_mode (kt->cipher);
--	if (!(mode == OPENVPN_MODE_CBC
-+	aead_cipher = aead_mode (mode);
-+	if (!(mode == OPENVPN_MODE_CBC || all_xtra_mode (mode)
+ /*
+@@ -431,6 +491,9 @@
  #ifdef ALLOW_NON_CBC_CIPHERS
  	      || (cfb_ofb_allowed && (mode == OPENVPN_MODE_CFB || mode == OPENVPN_MODE_OFB))
  #endif
-@@ -446,10 +486,15 @@
++#ifdef USE_XTRA_CIPHER_MODES
++	      || all_xtra_mode (mode)
++#endif
+ 	      ))
+ #ifdef ENABLE_SMALL
+ 	  msg (M_FATAL, "Cipher '%s' mode not supported", ciphername);
+@@ -483,6 +546,11 @@
+           cipher_kt_block_size(kt->cipher),
+           cipher_kt_iv_size(kt->cipher));
      }
-   if (authname && authname_defined)
++#ifdef USE_XTRA_CIPHER_MODES
++  if (kt->cipher && aead_mode (cipher_kt_mode (kt->cipher)))
++    ; /* bypass hmac */
++  else
++#endif
+   if (kt->digest && kt->hmac_length > 0)
      {
--      kt->digest = md_kt_get (authname);
--      kt->hmac_length = md_kt_size (kt->digest);
-+      if (aead_cipher) {
-+	msg (M_FATAL, "AEAD mode cipher '%s' does not need an HMAC algorithm"
-+			", specify '--auth none'.", ciphername);
-+      } else {
-+	kt->digest = md_kt_get (authname);
-+	kt->hmac_length = md_kt_size (kt->digest);
-+      }
-     }
--  else
-+  else if (!aead_cipher)
-     {
-       if (warn)
- 	msg (M_WARN, "******* WARNING *******: null MAC specified, no authentication will be used");
+       ALLOC_OBJ(ctx->hmac, hmac_ctx_t);
 --- a/src/openvpn/crypto.h	2014-05-01 19:35:20.000000000 +0900
-+++ b/src/openvpn/crypto.h	2015-02-04 01:10:52.000000000 +0900
-@@ -393,6 +393,35 @@
++++ b/src/openvpn/crypto.h	2015-02-12 19:41:11.000000000 +0900
+@@ -393,6 +393,25 @@
    return key->encrypt.cipher || key->encrypt.hmac || key->decrypt.cipher || key->decrypt.hmac;
  }
  
-+static inline bool
-+all_xtra_mode (unsigned int mode)
-+{
 +#ifdef USE_XTRA_CIPHER_MODES
++static inline bool
++all_xtra_mode (const unsigned int mode)
++{
 +  return mode == OPENVPN_MODE_GCM || mode == OPENVPN_MODE_CTR || mode == OPENVPN_MODE_XTS;
-+#else
-+  return false;
-+#endif
 +}
 +
 +static inline bool
-+aead_mode (unsigned int mode)
++aead_mode (const unsigned int mode)
 +{
-+#ifdef USE_XTRA_CIPHER_MODES
 +  return mode == OPENVPN_MODE_GCM;
-+#else
-+  return false;
-+#endif
 +}
 +
 +static inline int
-+aead_tag_len (unsigned int mode)
++aead_tag_len (const unsigned int mode)
 +{
-+#ifdef USE_XTRA_CIPHER_MODES
 +  return mode == OPENVPN_MODE_GCM ? OPENVPN_GCM_TAG_LENGTH : 0;
-+#else
-+  return 0;
-+#endif
 +}
++#endif
  
  #endif /* ENABLE_CRYPTO */
  #endif /* CRYPTO_H */
 --- a/src/openvpn/crypto_backend.h	2013-05-31 21:00:07.000000000 +0900
-+++ b/src/openvpn/crypto_backend.h	2013-09-08 19:21:22.430003330 +0900
-@@ -330,6 +330,24 @@
++++ b/src/openvpn/crypto_backend.h	2015-02-12 19:51:02.000000000 +0900
+@@ -330,6 +330,26 @@
   */
  int cipher_ctx_final (cipher_ctx_t *ctx, uint8_t *dst, int *dst_len);
  
++#ifdef USE_XTRA_CIPHER_MODES
 +/**
 + * Gets the expected message authenticated code (MAC) tag for this cipher.
 + *
@@ -296,12 +312,13 @@
 + * @param tag_size	The tag's size, in bytes.
 + */
 +int cipher_ctx_set_tag (cipher_ctx_t *ctx, uint8_t* tag, int tag_len);
++#endif
 +
  /*
   *
   * Generic message digest information functions
 --- a/src/openvpn/crypto_openssl.c	2014-05-01 20:12:22.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.c	2015-02-04 01:12:30.000000000 +0900
++++ b/src/openvpn/crypto_openssl.c	2015-02-12 20:07:51.000000000 +0900
 @@ -316,6 +316,9 @@
  	{
  	  const unsigned int mode = EVP_CIPHER_mode (cipher);
@@ -312,35 +329,29 @@
  #ifdef ALLOW_NON_CBC_CIPHERS
  	      || mode == EVP_CIPH_CFB_MODE || mode == EVP_CIPH_OFB_MODE
  #endif
-@@ -608,6 +611,25 @@
+@@ -608,6 +611,19 @@
    return EVP_CipherFinal (ctx, dst, dst_len);
  }
  
++#ifdef USE_XTRA_CIPHER_MODES
 +int cipher_ctx_get_tag (EVP_CIPHER_CTX *ctx, uint8_t *tag_buf, int tag_size)
 +{
-+#ifdef USE_XTRA_CIPHER_MODES
 +  return EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_GET_TAG, tag_size, tag_buf);
-+#else
-+  ASSERT (0);
-+#endif
 +}
 +
 +int
 +cipher_ctx_set_tag (EVP_CIPHER_CTX *ctx, uint8_t *tag_buf, int tag_size)
 +{
-+#ifdef USE_XTRA_CIPHER_MODES
 +  return EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_TAG, tag_size, tag_buf);
-+#else
-+  ASSERT (0);
-+#endif
 +}
++#endif
 +
  
  void
  cipher_des_encrypt_ecb (const unsigned char key[DES_KEY_LENGTH],
 --- a/src/openvpn/crypto_openssl.h	2014-05-01 19:35:20.000000000 +0900
-+++ b/src/openvpn/crypto_openssl.h	2015-02-04 01:13:42.000000000 +0900
-@@ -61,6 +61,26 @@
++++ b/src/openvpn/crypto_openssl.h	2015-02-12 20:01:11.000000000 +0900
+@@ -61,6 +61,24 @@
  /** Cipher is in CFB mode */
  #define OPENVPN_MODE_CFB 	EVP_CIPH_CFB_MODE
  
@@ -360,19 +371,18 @@
 +/** Tag length of GCM mode is 16 */
 +#define OPENVPN_GCM_TAG_LENGTH	OPENVPN_AEAD_TAG_LENGTH
 +/*	OPENVPN_CCM_TAG_LENGTH	12 */
-+#else
-+#define OPENVPN_AEAD_TAG_LENGTH	0
 +#endif
 +
  /** Cipher should encrypt */
  #define OPENVPN_OP_ENCRYPT 	1
  
 --- a/src/openvpn/crypto_polarssl.c	2013-05-31 21:00:07.000000000 +0900
-+++ b/src/openvpn/crypto_polarssl.c	2013-09-08 19:22:18.890318231 +0900
-@@ -493,6 +493,16 @@
++++ b/src/openvpn/crypto_polarssl.c	2015-02-12 20:11:15.000000000 +0900
+@@ -493,6 +493,18 @@
    return 0 == retval;
  }
  
++#ifdef USE_XTRA_CIPHER_MODES
 +int cipher_ctx_get_tag (cipher_ctx_t *ctx, uint8_t* tag, int tag_len)
 +{
 +  ASSERT (0);
@@ -382,6 +392,7 @@
 +{
 +  ASSERT (0);
 +}
++#endif
 +
  void
  cipher_des_encrypt_ecb (const unsigned char key[DES_KEY_LENGTH],
