@@ -69,7 +69,7 @@
  	polarssl)
  		have_crypto_crypto="${have_polarssl_crypto}"
 --- a/src/openvpn/crypto.c	2015-02-13 00:14:04.000000000 +0900
-+++ b/src/openvpn/crypto.c	2015-02-14 21:51:24.000000000 +0900
++++ b/src/openvpn/crypto.c	2015-03-04 01:27:26.000000000 +0900
 @@ -83,6 +83,195 @@
    return ret;
  }
@@ -420,6 +420,49 @@
  #ifdef USE_XTRA_CIPHER_MODES
    if (kt->cipher && aead_mode (cipher_kt_mode (kt->cipher)))
      ; /* bypass hmac */
+@@ -757,12 +1021,31 @@
+   struct gc_arena gc = gc_new ();
+   struct buffer src = alloc_buf_gc (TUN_MTU_SIZE (frame), &gc);
+   struct buffer work = alloc_buf_gc (BUF_SIZE (frame), &gc);
++#ifdef ARM_ALIGN_VAL
++  struct buffer encrypt_workspace = alloc_buf_gc (BUF_SIZE (frame)
++					+ ARM_ALIGN_VAL - 1, &gc);
++  struct buffer decrypt_workspace = alloc_buf_gc (BUF_SIZE (frame)
++					+ ARM_ALIGN_VAL - 1, &gc);
++#else
+   struct buffer encrypt_workspace = alloc_buf_gc (BUF_SIZE (frame), &gc);
+   struct buffer decrypt_workspace = alloc_buf_gc (BUF_SIZE (frame), &gc);
++#endif
+   struct buffer buf = clear_buf();
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  uint8_t **tmp1 = (uint8_t **) &co->enc_buf;
++  uint8_t **tmp2 = (uint8_t **) &co->align_error;
++  uint8_t *first_bufp;
++  uint8_t align_err[2] = {0};
++
++  *tmp1 = BPTR (&work);
++  *tmp2 = align_err;
++#endif
+ 
+   /* init work */
+   ASSERT (buf_init (&work, FRAME_HEADROOM (frame)));
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++  first_bufp = BPTR (&work);
++#endif
+ 
+   msg (M_INFO, "Entering " PACKAGE_NAME " crypto self-test mode.");
+   for (i = 1; i <= TUN_MTU_SIZE (frame); ++i)
+@@ -779,6 +1062,10 @@
+       src.len = i;
+       ASSERT (rand_bytes (BPTR (&src), BLEN (&src)));
+ 
++#if defined(USE_EVP_AEAD) && defined(_ARM_ALIGNMENT)
++      if (align_err[0])
++	buf_init (&work, first_bufp - co->enc_buf + ARM_ALIGN_VAL - align_err[0]);
++#endif
+       /* copy source to input buf */
+       buf = work;
+       memcpy (buf_write_alloc (&buf, BLEN (&src)), BPTR (&src), BLEN (&src));
 --- a/src/openvpn/crypto.h	2015-02-04 01:10:52.000000000 +0900
 +++ b/src/openvpn/crypto.h	2015-02-05 00:58:21.000000000 +0900
 @@ -163,6 +163,12 @@
