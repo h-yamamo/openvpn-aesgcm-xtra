@@ -9,7 +9,7 @@ Reference:
 
 How to make the package:
 
-*Debian 7.8 (wheezy) # add backports apt-line
+*Debian 7 (wheezy) # add backports apt-line
   (in some directory)
   apt-get -d -t wheezy-backports source openvpn
   tar xf openvpn_2.3.2.orig.tar.gz
@@ -27,7 +27,7 @@ How to make the package:
   cp -a (this repository)/jessie/debian/* debian/
   debuild -uc -us
 
-*Ubuntu 14.04.1 LTS (Trusty Tahr)
+*Ubuntu 14.04 LTS (trusty)
   (in some directory)
   apt-get -d source openvpn
   tar xf openvpn_2.3.2.orig.tar.gz
