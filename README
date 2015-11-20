@@ -16,7 +16,7 @@ Build package:
   apt-get -d source openvpn
   tar xf openvpn_2.3.4.orig.tar.gz
   cd openvpn-2.3.4
-  tar xvf ../openvpn_2.3.4-5.debian.tar.xz
+  tar xvf ../openvpn_2.3.4-5+deb8u1.debian.tar.xz
   cp -a (this repository)/jessie/debian/* debian/
   debuild -uc -us
 
