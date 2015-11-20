@@ -20,7 +20,7 @@ Build package:
   cp -a (this repository)/jessie/debian/* debian/
   debuild -uc -us
 
-*Ubuntu 14.04.2 LTS (Trusty Tahr)
+*Ubuntu 14.04 LTS (trusty)
   (in some directory)
   apt-get -d source openvpn
   tar xf openvpn_2.3.2.orig.tar.gz
