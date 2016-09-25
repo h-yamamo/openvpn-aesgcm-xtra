@@ -36,6 +36,15 @@ How to make the package:
   cp -a (this repository)/trusty/debian/* debian/
   debuild -uc -us
 
+*Ubuntu 16.04 LTS (xenial)
+  (in some directory)
+  apt-get -d source openvpn
+  tar xf openvpn_2.3.10.orig.tar.gz
+  cd openvpn-2.3.10
+  tar xvf ../openvpn_2.3.10-1ubuntu2.debian.tar.xz
+  cp -av (this repository)/xenial/debian/* debian/
+  debuild -uc -us
+
 Usage with AES-GCM cipher mode:
   openvpn --cipher id-aes128-GCM ...
 
