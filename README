@@ -32,7 +32,7 @@ How to make the package:
   apt-get -d source openvpn
   tar xf openvpn_2.3.2.orig.tar.gz
   cd openvpn-2.3.2
-  tar xvf ../openvpn_2.3.2-7ubuntu3.1.debian.tar.gz
+  tar xvf ../openvpn_2.3.2-7ubuntu3.2.debian.tar.gz
   cp -a (this repository)/trusty/debian/* debian/
   debuild -uc -us
 
@@ -41,7 +41,7 @@ How to make the package:
   apt-get -d source openvpn
   tar xf openvpn_2.3.10.orig.tar.gz
   cd openvpn-2.3.10
-  tar xvf ../openvpn_2.3.10-1ubuntu2.debian.tar.xz
+  tar xvf ../openvpn_2.3.10-1ubuntu2.1.debian.tar.xz
   cp -av (this repository)/xenial/debian/* debian/
   debuild -uc -us
 
