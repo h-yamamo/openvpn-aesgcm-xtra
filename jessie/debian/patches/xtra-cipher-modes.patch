@@ -46,8 +46,9 @@
  		;;
  	polarssl)
  		have_crypto_crypto="${have_polarssl_crypto}"
---- a/src/openvpn/crypto.c	2014-05-01 20:12:22.000000000 +0900
-+++ b/src/openvpn/crypto.c	2015-02-12 23:58:14.000000000 +0900
+diff -ur openvpn-2.3.4-5+deb8u2 openvpn-2.3.4-5+deb8u2+ore1
+--- a/src/openvpn/crypto.c	2017-06-25 14:48:50 +0000
++++ b/src/openvpn/crypto.c	2017-06-28
 @@ -94,16 +94,26 @@
    if (buf->len > 0 && opt->key_ctx_bi)
      {
@@ -79,7 +80,7 @@
  
 @@ -132,7 +142,7 @@
  	      buf_set_write (&b, iv_buf, iv_size);
- 	      ASSERT (packet_id_write (&pin, &b, true, false));
+ 	      ASSERT (packet_id_write (&opt->packet_id->send, &b, true, false));
  	    }
 -	  else /* We only support CBC, CFB, or OFB modes right now */
 +	  else /* We only support CBC, CFB, OFB, GCM, CTR or XTS modes right now */
@@ -116,7 +117,7 @@
  
  	  /* prepend the IV to the ciphertext */
  	  if (opt->flags & CO_USE_IV)
-@@ -195,6 +208,19 @@
+@@ -196,6 +209,19 @@
  	  work = *buf;
  	}
  
@@ -136,7 +137,7 @@
        /* HMAC the ciphertext (or plaintext if !cipher) */
        if (ctx->hmac)
  	{
-@@ -242,7 +268,13 @@
+@@ -243,7 +269,13 @@
        struct key_ctx *ctx = &opt->key_ctx_bi->decrypt;
        struct packet_id_net pin;
        bool have_pin = false;
@@ -150,7 +151,7 @@
        /* Verify the HMAC */
        if (ctx->hmac)
  	{
-@@ -272,14 +304,27 @@
+@@ -273,14 +305,27 @@
  
        if (ctx->cipher)
  	{
@@ -179,7 +180,7 @@
  	  /* use IV if user requested it */
  	  CLEAR (iv_buf);
  	  if (opt->flags & CO_USE_IV)
-@@ -305,6 +350,11 @@
+@@ -306,6 +351,11 @@
  	  if (!buf_safe (&work, buf->len))
  	    CRYPT_ERROR ("buffer overflow");
  
@@ -191,7 +192,7 @@
  	  /* Decrypt packet ID, payload */
  	  if (!cipher_ctx_update (ctx->cipher, BPTR (&work), &outlen, BPTR (buf), BLEN (buf)))
  	    CRYPT_ERROR ("cipher update failed");
-@@ -320,12 +370,16 @@
+@@ -321,12 +371,16 @@
  
  	  /* Get packet ID from plaintext buffer or IV, depending on cipher mode */
  	  {
@@ -210,7 +211,7 @@
  		    have_pin = true;
  		  }
  	      }
-@@ -341,7 +395,7 @@
+@@ -342,7 +396,7 @@
  		  CRYPT_ERROR ("error reading CFB/OFB packet-id");
  		have_pin = true;
  	      }
@@ -219,7 +220,7 @@
  	      {
  		ASSERT (0);
  	      }
-@@ -400,11 +454,17 @@
+@@ -401,11 +455,17 @@
  			       bool packet_id,
  			       bool packet_id_long_form)
  {
@@ -238,7 +239,7 @@
  }
  
  /*
-@@ -431,6 +491,9 @@
+@@ -432,6 +492,9 @@
  #ifdef ALLOW_NON_CBC_CIPHERS
  	      || (cfb_ofb_allowed && (mode == OPENVPN_MODE_CFB || mode == OPENVPN_MODE_OFB))
  #endif
@@ -248,7 +249,7 @@
  	      ))
  #ifdef ENABLE_SMALL
  	  msg (M_FATAL, "Cipher '%s' mode not supported", ciphername);
-@@ -483,6 +546,11 @@
+@@ -484,6 +547,11 @@
            cipher_kt_block_size(kt->cipher),
            cipher_kt_iv_size(kt->cipher));
      }
